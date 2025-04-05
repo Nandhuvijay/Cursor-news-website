@@ -199,20 +199,55 @@ const fetchRSSFeed = async (url) => {
   }
 };
 
+// Add this function to sanitize HTML content
+const sanitizeHTML = (html) => {
+  if (!html) return '';
+  return html
+    .replace(/<img[^>]*>/g, '') // Remove img tags
+    .replace(/<[^>]*>/g, '') // Remove all HTML tags
+    .replace(/&nbsp;/g, ' ') // Replace &nbsp; with space
+    .replace(/&amp;/g, '&') // Replace &amp; with &
+    .replace(/&quot;/g, '"') // Replace &quot; with "
+    .replace(/&lt;/g, '<') // Replace &lt; with <
+    .replace(/&gt;/g, '>') // Replace &gt; with >
+    .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+    .trim(); // Remove leading and trailing spaces
+};
+
 const processRSSItems = (items) => {
-  return items.map(item => ({
-    title: item.title?.[0] || '',
-    description: item.description?.[0] || '',
-    url: item.link?.[0] || '',
-    urlToImage: item.enclosure?.[0]?.$.url || 
-                item['media:content']?.[0]?.$.url ||
-                item['media:thumbnail']?.[0]?.$.url ||
-                defaultImageUrl,
-    publishedAt: item.pubDate?.[0] || new Date().toISOString(),
-    source: {
-      name: item.source?.[0] || 'Indian News'
+  return items.map(item => {
+    // Extract the first image URL from the description if available
+    let imageUrl = item.enclosure?.[0]?.$.url || 
+                  item['media:content']?.[0]?.$.url ||
+                  item['media:thumbnail']?.[0]?.$.url;
+
+    // If no image URL found, try to extract from description
+    if (!imageUrl && item.description?.[0]) {
+      const imgMatch = item.description[0].match(/<img[^>]+src="([^">]+)"/);
+      if (imgMatch) {
+        imageUrl = imgMatch[1];
+      }
     }
-  }));
+
+    // Clean up the description
+    let description = item.description?.[0] || '';
+    description = sanitizeHTML(description);
+
+    // Clean up the title
+    let title = item.title?.[0] || '';
+    title = sanitizeHTML(title);
+
+    return {
+      title: title,
+      description: description,
+      url: item.link?.[0] || '',
+      urlToImage: imageUrl || defaultImageUrl,
+      publishedAt: item.pubDate?.[0] || new Date().toISOString(),
+      source: {
+        name: item.source?.[0] || 'Indian News'
+      }
+    };
+  });
 };
 
 const News = () => {
