@@ -49,10 +49,11 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import BookmarkBorderIcon from '@mui/icons-material/BookmarkBorder';
 import ShareIcon from '@mui/icons-material/Share';
 import HomeIcon from '@mui/icons-material/Home';
-import { useNavigate } from 'react-router-dom';
+import SearchIcon from '@mui/icons-material/Search';
 import AutorenewIcon from '@mui/icons-material/Autorenew';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
+import { useNavigate } from 'react-router-dom';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import LocalHospitalIcon from '@mui/icons-material/LocalHospital';
@@ -73,6 +74,8 @@ import WaterDropIcon from '@mui/icons-material/WaterDrop';
 import AirIcon from '@mui/icons-material/Air';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import InputAdornment from '@mui/material/InputAdornment';
+import Sentiment from 'sentiment';
+import { debounce } from 'lodash';
 window.Buffer = Buffer;
 
 // Add these keyframes after imports and before the News component
@@ -214,6 +217,19 @@ const sanitizeHTML = (html) => {
     .trim(); // Remove leading and trailing spaces
 };
 
+const sentiment = new Sentiment();
+
+// Add this function to analyze sentiment
+const analyzeSentiment = (text) => {
+  const result = sentiment.analyze(text);
+  return {
+    score: result.score,
+    comparative: result.comparative,
+    sentiment: result.score > 0 ? 'positive' : result.score < 0 ? 'negative' : 'neutral'
+  };
+};
+
+// Update processRSSItems to include sentiment analysis
 const processRSSItems = (items) => {
   return items.map(item => {
     // Extract the first image URL from the description if available
@@ -237,6 +253,10 @@ const processRSSItems = (items) => {
     let title = item.title?.[0] || '';
     title = sanitizeHTML(title);
 
+    // Analyze sentiment for both title and description
+    const titleSentiment = analyzeSentiment(title);
+    const descriptionSentiment = analyzeSentiment(description);
+    
     return {
       title: title,
       description: description,
@@ -245,6 +265,11 @@ const processRSSItems = (items) => {
       publishedAt: item.pubDate?.[0] || new Date().toISOString(),
       source: {
         name: item.source?.[0] || 'Indian News'
+      },
+      sentiment: {
+        title: titleSentiment,
+        description: descriptionSentiment,
+        overall: analyzeSentiment(title + ' ' + description)
       }
     };
   });
@@ -278,6 +303,9 @@ const News = () => {
   const [loginError, setLoginError] = useState('');
   const [subscribeSuccess, setSubscribeSuccess] = useState(false);
 
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredNews, setFilteredNews] = useState([]);
+
   const theme = createTheme({
     palette: {
       mode: darkMode ? 'dark' : 'light',
@@ -297,6 +325,7 @@ const News = () => {
 
   const categories = [
     { value: 'world', label: 'World', icon: <PublicIcon />, color: '#9c27b0', gradient: 'linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%)' },
+    { value: 'india', label: 'India', icon: <AccountBalanceIcon />, color: '#f44336', gradient: 'linear-gradient(135deg, #f44336 0%, #d32f2f 100%)' },
     { value: 'sports', label: 'Sports', icon: <SportsIcon />, color: '#4caf50', gradient: 'linear-gradient(135deg, #4caf50 0%, #388e3c 100%)' },
     { value: 'business', label: 'Business', icon: <BusinessIcon />, color: '#ff9800', gradient: 'linear-gradient(135deg, #ff9800 0%, #f57c00 100%)' },
     { value: 'entertainment', label: 'Entertainment', icon: <MovieIcon />, color: '#e91e63', gradient: 'linear-gradient(135deg, #e91e63 0%, #c2185b 100%)' },
@@ -318,23 +347,56 @@ const News = () => {
       const maxRetries = 2;
       
       async function attemptFetch() {
-        // Determine which feeds to fetch based on category
-        for (const [sourceKey, source] of Object.entries(NEWS_SOURCES)) {
-          const feedUrl = source.rssFeeds[category] || source.rssFeeds.top;
-          if (feedUrl) {
-            try {
-              console.log(`Fetching ${category} news from ${sourceKey}... (Attempt ${retryCount + 1})`);
-              const result = await fetchRSSFeed(feedUrl);
-              if (result?.rss?.channel?.[0]?.item) {
-                const processedItems = processRSSItems(result.rss.channel[0].item);
-                console.log(`Successfully fetched ${processedItems.length} items from ${sourceKey}`);
-                feeds.push(...processedItems);
-              } else {
-                sourceErrors.push(`${sourceKey}: No items found in feed`);
+        // For world category, fetch from all sources including sports
+        if (category === 'world') {
+          for (const [sourceKey, source] of Object.entries(NEWS_SOURCES)) {
+            // Try to fetch from all available feeds
+            for (const [feedCategory, feedUrl] of Object.entries(source.rssFeeds)) {
+              if (feedUrl) {
+                try {
+                  console.log(`Fetching ${feedCategory} news from ${sourceKey}... (Attempt ${retryCount + 1})`);
+                  const result = await fetchRSSFeed(feedUrl);
+                  if (result?.rss?.channel?.[0]?.item) {
+                    const processedItems = processRSSItems(result.rss.channel[0].item);
+                    // Add category information to each item
+                    const itemsWithCategory = processedItems.map(item => ({
+                      ...item,
+                      category: feedCategory
+                    }));
+                    console.log(`Successfully fetched ${processedItems.length} items from ${sourceKey} - ${feedCategory}`);
+                    feeds.push(...itemsWithCategory);
+                  }
+                } catch (error) {
+                  console.error(`Error fetching from ${sourceKey} - ${feedCategory}:`, error);
+                  sourceErrors.push(`${sourceKey} - ${feedCategory}: ${error.message}`);
+                }
               }
-            } catch (error) {
-              console.error(`Error fetching from ${sourceKey}:`, error);
-              sourceErrors.push(`${sourceKey}: ${error.message}`);
+            }
+          }
+        } else {
+          // For other categories, fetch only from their specific feeds
+          for (const [sourceKey, source] of Object.entries(NEWS_SOURCES)) {
+            const feedUrl = source.rssFeeds[category] || source.rssFeeds.top;
+            if (feedUrl) {
+              try {
+                console.log(`Fetching ${category} news from ${sourceKey}... (Attempt ${retryCount + 1})`);
+                const result = await fetchRSSFeed(feedUrl);
+                if (result?.rss?.channel?.[0]?.item) {
+                  const processedItems = processRSSItems(result.rss.channel[0].item);
+                  // Add category information to each item
+                  const itemsWithCategory = processedItems.map(item => ({
+                    ...item,
+                    category: category
+                  }));
+                  console.log(`Successfully fetched ${processedItems.length} items from ${sourceKey}`);
+                  feeds.push(...itemsWithCategory);
+                } else {
+                  sourceErrors.push(`${sourceKey}: No items found in feed`);
+                }
+              } catch (error) {
+                console.error(`Error fetching from ${sourceKey}:`, error);
+                sourceErrors.push(`${sourceKey}: ${error.message}`);
+              }
             }
           }
         }
@@ -347,8 +409,8 @@ const News = () => {
       while (feeds.length === 0 && retryCount < maxRetries) {
         retryCount++;
         console.log(`No articles found, retrying... (Attempt ${retryCount + 1})`);
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between retries
-        sourceErrors = []; // Clear previous errors
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        sourceErrors = [];
         await attemptFetch();
       }
 
@@ -360,7 +422,7 @@ const News = () => {
           article.description && 
           !article.title.includes('[Removed]')
         )
-        .slice(0, 30); // Limit to 30 articles
+        .slice(0, 30);
 
       if (validArticles.length === 0) {
         const errorMessage = sourceErrors.length > 0 
@@ -432,7 +494,7 @@ const News = () => {
   const getCurrentPageArticles = () => {
     const startIndex = (currentPage - 1) * articlesPerPage;
     const endIndex = startIndex + articlesPerPage;
-    return news.slice(startIndex, endIndex);
+    return filteredNews.slice(startIndex, endIndex);
   };
 
   const handlePageChange = (event, value) => {
@@ -440,7 +502,7 @@ const News = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const totalPages = Math.ceil(news.length / articlesPerPage);
+  const totalPages = Math.ceil(filteredNews.length / articlesPerPage);
 
   // Add handlers for login
   const handleLoginOpen = () => {
@@ -488,6 +550,125 @@ const News = () => {
     // Add your subscription logic here
   };
 
+  // Update the getSearchScore function to better handle sports content
+  const getSearchScore = (article, searchTerms) => {
+    let score = 0;
+    const title = article.title?.toLowerCase() || '';
+    const description = article.description?.toLowerCase() || '';
+    const source = article.source?.name?.toLowerCase() || '';
+    const category = article.category?.toLowerCase() || '';
+
+    // Check for exact matches first
+    const exactMatch = searchTerms.join(' ').toLowerCase();
+    if (title.includes(exactMatch)) score += 300;
+    if (description.includes(exactMatch)) score += 150;
+    if (source.includes(exactMatch)) score += 100;
+    if (category.includes(exactMatch)) score += 200;
+
+    // Check for individual term matches with higher weights
+    searchTerms.forEach(term => {
+      const termLower = term.toLowerCase();
+      
+      // Title matches
+      if (title.includes(termLower)) {
+        score += 50;
+        if (title.startsWith(termLower)) score += 30;
+      }
+      
+      // Description matches
+      if (description.includes(termLower)) {
+        score += 25;
+        const count = (description.match(new RegExp(termLower, 'g')) || []).length;
+        score += count * 10;
+      }
+      
+      // Source matches
+      if (source.includes(termLower)) score += 20;
+      
+      // Category matches
+      if (category.includes(termLower)) score += 40;
+    });
+
+    // Boost score for recent articles
+    const articleDate = new Date(article.publishedAt);
+    const now = new Date();
+    const hoursOld = (now - articleDate) / (1000 * 60 * 60);
+    if (hoursOld < 24) score += 30;
+    else if (hoursOld < 48) score += 20;
+    else if (hoursOld < 72) score += 10;
+
+    // Special boost for sports content
+    if (category === 'sports' || title.includes('sports') || description.includes('sports')) {
+      score += 40;
+    }
+
+    // Special boost for cricket content
+    if (title.includes('cricket') || description.includes('cricket')) {
+      score += 50;
+    }
+
+    return score;
+  };
+
+  // Update the debouncedSearch function
+  const debouncedSearch = useCallback(
+    debounce((query) => {
+      if (!query.trim()) {
+        setFilteredNews(news);
+        return;
+      }
+
+      const searchTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 0);
+      
+      // Search across all categories when in world tab or when searching
+      const allNews = [...news];
+      const scoredArticles = allNews.map(article => ({
+        ...article,
+        searchScore: getSearchScore(article, searchTerms)
+      }));
+
+      const filtered = scoredArticles
+        .filter(article => article.searchScore > 0)
+        .sort((a, b) => b.searchScore - a.searchScore);
+
+      setFilteredNews(filtered);
+    }, 300),
+    [news]
+  );
+
+  // Update search handler
+  const handleSearch = (query) => {
+    setSearchQuery(query);
+    debouncedSearch(query);
+  };
+
+  // Update useEffect to handle filtered news
+  useEffect(() => {
+    if (news.length > 0) {
+      setFilteredNews(news);
+      setCurrentPage(1); // Reset to first page when news changes
+    }
+  }, [news]);
+
+  // Add useEffect to reset page when search query changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery]);
+
+  // Add this function to get sentiment color
+  const getSentimentColor = (score) => {
+    if (score > 0) return '#4caf50'; // Green for positive
+    if (score < 0) return '#f44336'; // Red for negative
+    return '#9e9e9e'; // Grey for neutral
+  };
+
+  // Add this function to get sentiment emoji
+  const getSentimentEmoji = (score) => {
+    if (score > 0) return '😊';
+    if (score < 0) return '😞';
+    return '😐';
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <Box sx={{ 
@@ -511,7 +692,9 @@ const News = () => {
               display: 'flex', 
               alignItems: 'center', 
               justifyContent: 'space-between',
-              mb: 3 
+              mb: 3,
+              flexWrap: 'nowrap',
+              gap: 2
             }}>
               <Typography 
                 variant="h4" 
@@ -519,22 +702,62 @@ const News = () => {
                 sx={{ 
                   fontWeight: 800,
                   color: theme.palette.text.primary,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
                   fontSize: { xs: '1.75rem', md: '2.5rem' },
                   fontFamily: 'Georgia, serif',
                   letterSpacing: '-0.5px',
                   textTransform: 'none',
                   borderBottom: `2px solid ${theme.palette.primary.main}`,
                   paddingBottom: 1,
-                  marginBottom: 2
+                  marginBottom: 0,
+                  flexShrink: 0,
+                  minWidth: 'fit-content'
                 }}
               >
                 Daily News
               </Typography>
+
+              {/* Search Bar */}
+              <TextField
+                size="small"
+                variant="outlined"
+                placeholder="Search by topic, category, or source..."
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon />
+                    </InputAdornment>
+                  ),
+                  endAdornment: searchQuery && (
+                    <InputAdornment position="end">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleSearch('')}
+                        sx={{ p: 0 }}
+                      >
+                        <CloseIcon fontSize="small" />
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{
+                  flex: 1,
+                  mx: 2,
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 2,
+                    bgcolor: darkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)',
+                    height: '40px'
+                  }
+                }}
+              />
               
-              <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              <Box sx={{ 
+                display: 'flex', 
+                gap: { xs: 1, md: 2 }, 
+                alignItems: 'center',
+                flexShrink: 0
+              }}>
                 <IconButton 
                   onClick={toggleDarkMode} 
                   sx={{ 
@@ -549,34 +772,7 @@ const News = () => {
                 >
                   {darkMode ? <Brightness7Icon /> : <Brightness4Icon />}
                 </IconButton>
-                <Button
-                  variant="text"
-                  onClick={handleLoginOpen}
-                  sx={{
-                    color: theme.palette.text.primary,
-                    textTransform: 'none',
-                    fontWeight: 500,
-                    fontSize: '0.9rem'
-                  }}
-                >
-                  LOGIN
-                </Button>
-                <Button
-                  variant="contained"
-                  onClick={handleSubscribeOpen}
-                  startIcon={isSubscribed ? <CheckCircleIcon /> : null}
-                  sx={{
-                    bgcolor: isSubscribed ? '#4caf50' : theme.palette.primary.main,
-                    '&:hover': {
-                      bgcolor: isSubscribed ? '#45a049' : (darkMode ? '#1ed760' : '#b71c1c'),
-                    },
-                    textTransform: 'none',
-                    borderRadius: 0,
-                    fontWeight: 500
-                  }}
-                >
-                  {isSubscribed ? 'Subscribed' : 'Subscribe'}
-                </Button>
+               
               </Box>
             </Box>
 
@@ -799,12 +995,12 @@ const News = () => {
                   </Button>
                 </Box>
               </Alert>
-            ) : news.length === 0 ? (
+            ) : filteredNews.length === 0 ? (
               <Alert 
                 severity="info" 
                 sx={{ mb: 3, borderRadius: 0 }}
               >
-                No articles found. Try a different search or category.
+                No articles found matching your search.
               </Alert>
             ) : (
               <>
@@ -884,6 +1080,39 @@ const News = () => {
                             >
                               {article.description || 'No description available'}
                             </Typography>
+                            
+                            {/* Add Sentiment Indicator */}
+                            <Box sx={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              gap: 1,
+                              mt: 2,
+                              mb: 1
+                            }}>
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 0.5,
+                                  color: getSentimentColor(article.sentiment.overall.score),
+                                  fontWeight: 600
+                                }}
+                              >
+                                {getSentimentEmoji(article.sentiment.overall.score)}
+                                {article.sentiment.overall.sentiment.toUpperCase()}
+                                <Tooltip title={`Sentiment Score: ${article.sentiment.overall.score}`}>
+                                  <Box sx={{ 
+                                    width: 8, 
+                                    height: 8, 
+                                    borderRadius: '50%',
+                                    bgcolor: getSentimentColor(article.sentiment.overall.score),
+                                    ml: 0.5
+                                  }} />
+                                </Tooltip>
+                              </Typography>
+                            </Box>
+
                             <Box sx={{ 
                               display: 'flex', 
                               alignItems: 'center', 
@@ -948,42 +1177,44 @@ const News = () => {
                   ))}
                 </Grid>
                 
-                {news.length > articlesPerPage && (
-                  <Box sx={{ 
-                    mt: 4, 
-                    display: 'flex', 
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: 2
-                  }}>
-                    <Pagination 
-                      count={totalPages}
-                      page={currentPage}
-                      onChange={handlePageChange}
-                      color={darkMode ? "primary" : "secondary"}
-                      size="large"
-                      showFirstButton
-                      showLastButton
-                      sx={{
-                        '& .MuiPaginationItem-root': {
-                          color: darkMode ? '#fff' : '#000',
-                          borderColor: darkMode ? '#333' : '#e0e0e0',
-                          margin: '0 4px',
-                          '&.Mui-selected': {
-                            backgroundColor: theme.palette.primary.main,
-                            color: '#fff',
-                            '&:hover': {
-                              backgroundColor: darkMode ? '#1ed760' : '#b71c1c',
-                            }
-                          },
+                {/* Pagination */}
+                <Box sx={{ 
+                  mt: 4, 
+                  display: 'flex', 
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 2
+                }}>
+                  <Pagination 
+                    count={totalPages}
+                    page={currentPage}
+                    onChange={handlePageChange}
+                    color={darkMode ? "primary" : "secondary"}
+                    size="large"
+                    showFirstButton
+                    showLastButton
+                    sx={{
+                      '& .MuiPaginationItem-root': {
+                        color: darkMode ? '#fff' : '#000',
+                        borderColor: darkMode ? '#333' : '#e0e0e0',
+                        margin: '0 4px',
+                        '&.Mui-selected': {
+                          backgroundColor: theme.palette.primary.main,
+                          color: '#fff',
                           '&:hover': {
-                            backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+                            backgroundColor: darkMode ? '#1ed760' : '#b71c1c',
                           }
+                        },
+                        '&:hover': {
+                          backgroundColor: darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
                         }
-                      }}
-                    />
-                  </Box>
-                )}
+                      }
+                    }}
+                  />
+                  <Typography variant="body2" sx={{ color: theme.palette.text.secondary }}>
+                    Showing {getCurrentPageArticles().length} of {filteredNews.length} articles
+                  </Typography>
+                </Box>
               </>
             )}
 
